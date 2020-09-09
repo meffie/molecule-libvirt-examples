@@ -3,26 +3,40 @@
   hosts: localhost
   connection: local
   gather_facts: false
+
   vars:
-    libvirt_uri: qemu+ssh://mars.devlab.sinenomine.net/system
+    #libvirt_host: mars.devlab.sinenomine.net
+    #libvirt_uri: qemu+ssh://{{ libvirt_host }}/system
+    libvirt_host: localhost
+    libvirt_uri: qemu:///system
     vm_name: m-instance-1
     vm_template: zz-cent7.5-templ
     vm_source: agent
     vm_user: devlab
-    #vm_ssh_pub: devlab.pub
     vm_root_pass: secret
-  tasks:
+    vm_selinux: no
 
-    - name: Get guest list
+  tasks:
+    - name: Read ssh public key
+      block:
+      - slurp:
+          src: /home/mmeffie/.ssh/devlab.pub
+        register: key_data
+      - set_fact:
+          vm_ssh_pub: "{{ key_data.content | b64decode }}"
+
+    - name: Look up guests
       virt:
         command: list_vms
         uri: "{{ libvirt_uri }}"
       register: virt_guests
 
-    - debug:
-        var: virt_guests
 
-    - name: Clone template
+
+
+    - fail:
+
+    - name: Clone template to instance
       command:
         cmd: >
           virt-clone --connect {{ libvirt_uri }}
@@ -32,25 +46,16 @@
       register: virt_clone
       when: vm_name is not in virt_guests.list_vms
 
-    - name: Stop guest
+    - name: Get instance status
       virt:
         name: "{{ vm_name }}"
-        state: shutdown
+        command: status
         uri: "{{ libvirt_uri }}"
-
-    - slurp:
-        src: /home/mmeffie/.ssh/devlab.pub
-      register: key
-
-    - set_fact:
-        vm_ssh_pub: "{{ key.content | b64decode }}"
-
-    - debug:
-        var: vm_ssh_pub
+      register: virt_status
 
     - name: Prepare instance image
       command: >
-        ssh mars.devlab.sinenomine.net --
+        ssh {{ libvirt_host }} --
         "sudo -n virt-customize
         --domain {{ vm_name }}
         --hostname {{ vm_name }}
@@ -58,39 +63,33 @@
         --run-command 'mkdir -p /etc/cloud && touch /etc/cloud/cloud-init.disabled'
         --run-command 'ssh-keygen -A'
         --ssh-inject '{{ vm_user }}:string:{{ vm_ssh_pub }}'
-        --root-password 'password:{{ vm_root_pass }}'"
+        --root-password 'password:{{ vm_root_pass }}'
+        {{ vm_selinux | ternary('--selinux-relabel', '') }}"
+      when: virt_status.status == 'shutdown'
       register: virt_cust
 
-    - debug:
-        var: virt_cust
-
-    - fail:
-        msg: breakpt
-
-    - name: Start guest
+    - name: Start instance
       virt:
         name: "{{ vm_name }}"
         state: running
         autostart: yes
         uri: "{{ libvirt_uri }}"
 
-    - name: Wait for address
+    - name: Starting instance
       shell: >
-        virsh --connect {{ libvirt_uri }} domifaddr --source {{ vm_source }} {{ vm_name }} |
-        awk '/ipv4/ {print $4}' | grep -v ^127 | cut -f1 -d/
+        virsh --connect {{ libvirt_uri }} domifaddr --full --source {{ vm_source }} {{ vm_name }} |
+        awk '$1 != "lo" && $3 == "ipv4" {print $4}'
       register: ip_out
       until: ip_out.stdout_lines|length > 0
-      delay: 3
+      delay: 5
       retries: 100
       changed_when: false
 
-    - set_fact:
-        vm_address: "{{ ip_out.stdout_lines[0] }}"
+    - name: Set instance address fact
+      set_fact:
+        vm_address: "{{ ip_out.stdout_lines[0] | regex_replace('/[0-9]*$')  }}"
 
-    - debug:
-        var: vm_address
-
-    - name: Wait for open ssh port
+    - name: Wait for instance ssh port
       wait_for:
         state: started
         port: 22
@@ -98,7 +97,3 @@
         delay: 0
         sleep: 2
         timeout: 240
-      register: wait_results
-
-    - debug:
-        var: wait_results

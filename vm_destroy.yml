@@ -3,11 +3,12 @@
   hosts: localhost
   connection: local
   gather_facts: false
+
   vars:
-    libvirt_uri: qemu+ssh://mars.devlab.sinenomine.net/system
+    #libvirt_uri: qemu+ssh://mars.devlab.sinenomine.net/system
+    libvirt_uri: qemu:///system
     vm_name: m-instance-1
-    vm_template: zz-cent7.5-templ
-    vm_source: agent
+
   tasks:
     - name: Shutdown instance
       virt:
